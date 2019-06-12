@@ -114,7 +114,7 @@ func TestMockQuery(t *testing.T) {
 
 	defer func() {
 		if er := rows.Close(); er != nil {
-			t.Error("Unexpected error while trying to close rows")
+			t.Error("unexpected error while trying to close rows")
 		}
 	}()
 
@@ -167,7 +167,7 @@ func TestMockQueryTypes(t *testing.T) {
 	}
 	defer func() {
 		if er := rows.Close(); er != nil {
-			t.Error("Unexpected error while trying to close rows")
+			t.Error("unexpected error while trying to close rows")
 		}
 	}()
 	if !rows.Next() {
@@ -615,7 +615,7 @@ func TestArgumentReflectValueTypeError(t *testing.T) {
 
 	_, err = db.Query("SELECT * FROM sales WHERE x = ?", 5)
 	if err == nil {
-		t.Error("Expected error, but got none")
+		t.Error("expected error, but got none")
 	}
 }
 
@@ -782,7 +782,7 @@ func TestEmptyRowSet(t *testing.T) {
 
 	defer func() {
 		if er := rows.Close(); er != nil {
-			t.Error("Unexpected error while trying to close rows")
+			t.Error("unexpected error while trying to close rows")
 		}
 	}()
 
@@ -1168,6 +1168,33 @@ func TestNewRows(t *testing.T) {
 	}
 }
 
+// This is actually a test of ExpectationsWereMet. Without a lock around e.fulfilled() inside
+// ExpectationWereMet, the race detector complains if e.triggered is being read while it is also
+// being written by the query running in another goroutine.
+func TestQueryWithTimeout(t *testing.T) {
+	db, mock, err := New()
+	if err != nil {
+		t.Errorf("an error '%s' was not expected when opening a stub database connection", err)
+	}
+	defer db.Close()
+
+	rs := NewRows([]string{"id", "title"}).FromCSVString("5,hello world")
+
+	mock.ExpectQuery("SELECT (.+) FROM articles WHERE id = ?").
+		WillDelayFor(15 * time.Millisecond). // Query will take longer than timeout
+		WithArgs(5).
+		WillReturnRows(rs)
+
+	_, err = queryWithTimeout(10*time.Millisecond, db, "SELECT (.+) FROM articles WHERE id = ?", 5)
+	if err == nil {
+		t.Errorf("expecting query to time out")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("there were unfulfilled expectations: %s", err)
+	}
+}
+
 func TestAnyNumberOfTimesQuery(t *testing.T) {
 	t.Parallel()
 	db, mock, err := New()
@@ -1223,111 +1250,25 @@ func TestAnyNumberOfTimesQuery(t *testing.T) {
 		t.Errorf("there were unfulfilled expectations: %s", err)
 	}
 }
+func queryWithTimeout(t time.Duration, db *sql.DB, query string, args ...interface{}) (*sql.Rows, error) {
+	rowsChan := make(chan *sql.Rows, 1)
+	errChan := make(chan error, 1)
 
-func TestAnyNumberOfTimesExec(t *testing.T) {
-	t.Parallel()
-	db, dbmock, _ := New()
-	dbmock.ExpectExec("THE FIRST EXEC").
-		AnyNumberOfTimes().
-		WillReturnResult(NewResult(0, 0))
-	dbmock.ExpectExec("THE SECOND EXEC").WillReturnResult(NewResult(0, 0))
-
-	_, err := db.Exec("THE FIRST EXEC")
-	if err != nil {
-		t.Fatalf("first exec failed the first time: %v", err)
-	}
-	_, err = db.Exec("THE FIRST EXEC")
-	if err != nil {
-		t.Fatalf("first exec failed the second time: %v", err)
-	}
-	_, err = db.Exec("THE SECOND EXEC")
-	if err != nil {
-		t.Fatalf("second exec failed the first time: %v", err)
-	}
-	_, err = db.Exec("THE SECOND EXEC")
-	if err == nil {
-		t.Fatalf("second exec did not fail the second time")
-	}
-	_, err = db.Exec("THE FIRST EXEC")
-	if err != nil {
-		t.Fatalf("first exec failed the third time: %v", err)
-	}
-
-	err = dbmock.ExpectationsWereMet()
-	if err != nil {
-		t.Fatalf("all expectations should be met: %s", err)
-	}
-}
-
-func TestAnyNumberOfTimesRows(t *testing.T) {
-	t.Parallel()
-	db, mock, err := New()
-	if err != nil {
-		t.Errorf("an error '%s' was not expected when opening a stub database connection", err)
-	}
-	defer db.Close()
-
-	rs := NewRows([]string{"id", "title"}).FromCSVString("5,hello world")
-
-	mock.ExpectQuery("SELECT (.+) FROM articles WHERE id = ?").
-		WithArgs(5).
-		WillReturnRows(rs).
-		AnyNumberOfTimes()
-
-	rows, err := db.Query("SELECT (.+) FROM articles WHERE id = ?", 5)
-	if err != nil {
-		t.Errorf("error '%s' was not expected while retrieving mock rows", err)
-	}
-
-	defer func() {
-		if er := rows.Close(); er != nil {
-			t.Errorf("Unexpected error while trying to close rows")
+	go func() {
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			errChan <- err
+			return
 		}
+		rowsChan <- rows
 	}()
 
-	if !rows.Next() {
-		t.Errorf("it must have had one row as result, but got empty result set instead: %v", rows.Err())
-	}
-
-	var id int
-	var title string
-
-	err = rows.Scan(&id, &title)
-	if err != nil {
-		t.Errorf("error '%s' was not expected while trying to scan row", err)
-	}
-
-	if id != 5 {
-		t.Errorf("expected mocked id to be 5, but got %d instead", id)
-	}
-
-	if title != "hello world" {
-		t.Errorf("expected mocked title to be 'hello world', but got '%s' instead", title)
-	}
-
-	rows, err = db.Query("SELECT (.+) FROM articles WHERE id = ?", 5)
-	if err != nil {
-		t.Errorf("error '%s' was not expected while retrieving mock rows", err)
-	}
-
-	if !rows.Next() {
-		t.Errorf("it must have had one row as result, but got empty result set instead: %v", rows.Err())
-	}
-
-	err = rows.Scan(&id, &title)
-	if err != nil {
-		t.Errorf("error '%s' was not expected while trying to scan row", err)
-	}
-
-	if id != 5 {
-		t.Errorf("expected mocked id to be 5, but got %d instead", id)
-	}
-
-	if title != "hello world" {
-		t.Errorf("expected mocked title to be 'hello world', but got '%s' instead", title)
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("there were unfulfilled expectations: %s", err)
+	select {
+	case rows := <-rowsChan:
+		return rows, nil
+	case err := <-errChan:
+		return nil, err
+	case <-time.After(t):
+		return nil, fmt.Errorf("query timed out after %v", t)
 	}
 }

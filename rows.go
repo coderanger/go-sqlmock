@@ -9,7 +9,7 @@ import (
 )
 
 // CSVColumnParser is a function which converts trimmed csv
-// column string to a []byte representation. currently
+// column string to a []byte representation. Currently
 // transforms NULL to nil
 var CSVColumnParser = func(s string) []byte {
 	switch {
@@ -22,6 +22,7 @@ var CSVColumnParser = func(s string) []byte {
 type rowSets struct {
 	sets []*Rows
 	pos  int
+	ex   *ExpectedQuery
 }
 
 func (rs *rowSets) Columns() []string {
@@ -29,6 +30,7 @@ func (rs *rowSets) Columns() []string {
 }
 
 func (rs *rowSets) Close() error {
+	rs.ex.rowsWereClosed = true
 	return rs.sets[rs.pos].closeErr
 }
 
